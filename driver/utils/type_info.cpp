@@ -22,7 +22,7 @@ const std::map<std::string, TypeInfo> types_g = {
     {"timestamp", TypeInfo {"TIMESTAMP", true, SQL_TYPE_TIMESTAMP, 29, 16}},
     {"timestampntz", TypeInfo {"TIMESTAMP", true, SQL_TYPE_TIMESTAMP, 29, 16}},
     {"timestamptz", TypeInfo {"TIMESTAMPTZ", true, SQL_TYPE_TIMESTAMP, 29, 16}},
-    {"array", TypeInfo {"array", true, SQL_VARCHAR, TypeInfo::string_max_size, TypeInfo::string_max_size}},
+    {"array", TypeInfo {"text", true, SQL_VARCHAR, TypeInfo::string_max_size, TypeInfo::string_max_size}},
     {"Nothing", TypeInfo {"null", true, SQL_TYPE_NULL, 1, 1}},
     {"bytea", TypeInfo {"bytea", true, SQL_LONGVARBINARY, TypeInfo::string_max_size, TypeInfo::string_max_size}},
 };
