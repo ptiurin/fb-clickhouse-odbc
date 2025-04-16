@@ -73,8 +73,6 @@ private:
 
     void processEscapeSequences();
     void extractParametersinfo();
-    std::string buildFinalQuery(const std::vector<ParamBindingInfo>& param_bindings);
-    std::string getParamFinalName(std::size_t param_idx);
     std::vector<ParamBindingInfo> getParamsBindingInfo(std::size_t param_set_idx);
 
     Descriptor & choose(std::shared_ptr<Descriptor> & implicit_desc, std::weak_ptr<Descriptor> & explicit_desc);
@@ -87,6 +85,9 @@ private:
 
     // Returns true if there is a special command that needs handling
     bool handleSpecialCommands();
+
+    // Helper method to escape special characters in JSON strings
+    std::string escapeJSONString(const std::string& input);
 
 private:
     std::shared_ptr<Descriptor> implicit_ard;

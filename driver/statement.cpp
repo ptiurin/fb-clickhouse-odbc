@@ -155,6 +155,9 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
     const auto param_bindings = getParamsBindingInfo(next_param_set_idx);
     //syslog( LOG_INFO, "kfirkfir: in function SQLExecDirect:execution middle10");
 
+    // Prepare JSON array for query_parameters
+    std::string query_parameters = "[";
+    
     for (std::size_t i = 0; i < parameters.size(); ++i) {
         std::string value;
 
@@ -173,12 +176,29 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
                 readReadyDataTo(binding_info, value);
         }
 
-        const auto param_name = getParamFinalName(i);
-        uri.addQueryParameter("param_" + param_name, value);
+        // Add parameter to JSON array
+        if (i > 0)
+            query_parameters += ", ";
+            
+        // Parameter name is $1, $2, etc.
+        query_parameters += "{\"name\": \"$" + std::to_string(i + 1) + "\", \"value\": ";
+        
+        // For NULL values
+        if (value == "\\N")
+            query_parameters += "null";
+        else
+            query_parameters += "\"" + escapeJSONString(value) + "\"";
+        
+        query_parameters += "}";
     }
-    //syslog( LOG_INFO, "kfirkfir: in function SQLExecDirect:execution middle11");
-
-    const auto prepared_query = buildFinalQuery(param_bindings);
+    
+    query_parameters += "]";
+    
+    // Add query_parameters to the URI
+    if (!parameters.empty()) {
+        uri.addQueryParameter("query_parameters", query_parameters);
+    }
+        //slog( G_INFOGkfirkG: in function SQLExecDirect:execution middle11");
 
     // TODO: set this only after this single query is fully fetched (when output parameter support is added)
     auto * param_set_processed_ptr = getEffectiveDescriptor(SQL_ATTR_IMP_PARAM_DESC).getAttrAs<SQLULEN *>(SQL_DESC_ROWS_PROCESSED_PTR, 0);
@@ -197,7 +217,7 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
     request.set("User-Agent", connection.buildUserAgentString());
     //syslog( LOG_INFO, "kfirkfir: in function SQLExecDirect:execution middle13. requesting with host: %s uri: %s, body: %s. session host: %s", request.getHost().c_str(), request.getURI().c_str(), prepared_query.c_str(), connection.session->getHost().c_str());
 
-    LOG(request.getMethod() << " " << request.getHost() << request.getURI() << " body=" << prepared_query
+    LOG(request.getMethod() << " " << request.getHost() << request.getURI() << " body=" << query
                             << " UA=" << request.get("User-Agent"));
 
     int redirect_count = 0;
@@ -205,7 +225,7 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
     for (int i = 1;; ++i) {
         try {
             for (; redirect_count < connection.redirect_limit; ++redirect_count) {
-                connection.session->sendRequest(request) << prepared_query;
+                connection.session->sendRequest(request) << query;
                 response = std::make_unique<Poco::Net::HTTPResponse>();
                 in = &connection.session->receiveResponse(*response);
                 auto status = response->getStatus();
@@ -280,19 +300,7 @@ void Statement::extractParametersinfo() {
 
     parameters.clear();
 
-    // TODO: implement this all in an upgraded Lexer.
-
-    Poco::UUIDGenerator uuid_gen;
-    auto generate_placeholder = [&] () {
-        std::string placeholder;
-        do {
-            const auto uuid = uuid_gen.createOne();
-            placeholder = '@' + uuid.toString();
-        } while (query.find(placeholder) != std::string::npos);
-        return placeholder;
-    };
-
-    // Replace all unquoted ? characters with a placeholder and populate 'parameters' array.
+    // Scan for ? and @param patterns and replace with $1, $2, etc.
     char quoted_by = '\0';
     for (std::size_t i = 0; i < query.size(); ++i) {
         const char curr = query[i];
@@ -324,7 +332,7 @@ void Statement::extractParametersinfo() {
             case '?': {
                 if (quoted_by == '\0') {
                     ParamInfo param_info;
-                    param_info.tmp_placeholder = generate_placeholder();
+                    param_info.tmp_placeholder = "$" + std::to_string(parameters.size() + 1);
                     query.replace(i, 1, param_info.tmp_placeholder);
                     i += param_info.tmp_placeholder.size() - 1; // - 1 to compensate for's next ++i
                     parameters.emplace_back(param_info);
@@ -354,7 +362,7 @@ void Statement::extractParametersinfo() {
                     if (param_info.name.size() == 1)
                         throw SqlException("Syntax error or access violation", "42000");
 
-                    param_info.tmp_placeholder = generate_placeholder();
+                    param_info.tmp_placeholder = "$" + std::to_string(parameters.size() + 1);
                     query.replace(i, param_info.name.size(), param_info.tmp_placeholder);
                     i += param_info.tmp_placeholder.size() - 1; // - 1 to compensate for's next ++i
                     parameters.emplace_back(param_info);
@@ -369,40 +377,32 @@ void Statement::extractParametersinfo() {
         ipd_desc.getRecord(parameters.size(), SQL_ATTR_IMP_PARAM_DESC);
 }
 
-std::string Statement::buildFinalQuery(const std::vector<ParamBindingInfo>& param_bindings) {
-    auto prepared_query = query;
-
-    for (std::size_t i = 0; i < parameters.size(); ++i) {
-        const auto & param_info = parameters[i];
-        std::string param_type;
-
-        if (param_bindings.size() <= i) {
-            param_type = "Nullable(Nothing)";
+// Helper method to escape special characters in JSON strings
+std::string Statement::escapeJSONString(const std::string& input) {
+    std::string result;
+    result.reserve(input.size());
+    
+    for (char c : input) {
+        switch (c) {
+            case '\"': result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\b': result += "\\b"; break;
+            case '\f': result += "\\f"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    result += buf;
+                } else {
+                    result += c;
+                }
         }
-        else {
-            const auto & binding_info = param_bindings[i];
-
-            BoundTypeInfo type_info;
-            type_info.c_type = binding_info.c_type;
-            type_info.sql_type = binding_info.sql_type;
-            type_info.value_max_size = binding_info.value_max_size;
-            type_info.precision = binding_info.precision;
-            type_info.scale = binding_info.scale;
-            type_info.is_nullable = (binding_info.is_nullable || binding_info.value == nullptr);
-
-            param_type = convertSQLOrCTypeToDataSourceType(type_info);
-        }
-
-        const auto pos = prepared_query.find(param_info.tmp_placeholder);
-        if (pos == std::string::npos)
-            throw SqlException("COUNT field incorrect", "07002");
-
-        const auto param_name = getParamFinalName(i);
-        const std::string param_placeholder = "{" + param_name + ":" + param_type + "}";
-        prepared_query.replace(pos, param_info.tmp_placeholder.size(), param_placeholder);
     }
-
-    return prepared_query;
+    
+    return result;
 }
 
 void Statement::executeQuery(const std::string & q, std::unique_ptr<ResultMutator> && mutator) {
@@ -480,20 +480,6 @@ void Statement::resetColBindings() {
 
 void Statement::resetParamBindings() {
     getEffectiveDescriptor(SQL_ATTR_APP_PARAM_DESC).setAttr(SQL_DESC_COUNT, 0);
-}
-
-std::string Statement::getParamFinalName(std::size_t param_idx) {
-    auto & ipd_desc = getEffectiveDescriptor(SQL_ATTR_IMP_PARAM_DESC);
-    if (param_idx < ipd_desc.getRecordCount()) {
-        auto & ipd_record = ipd_desc.getRecord(param_idx + 1, SQL_ATTR_IMP_PARAM_DESC);
-        if (ipd_record.getAttrAs<SQLSMALLINT>(SQL_DESC_UNNAMED, SQL_UNNAMED) != SQL_UNNAMED)
-            return tryStripParamPrefix(ipd_record.getAttrAs<std::string>(SQL_DESC_NAME));
-    }
-
-    if (param_idx < parameters.size() && !parameters[param_idx].name.empty())
-        return tryStripParamPrefix(parameters[param_idx].name);
-
-    return "odbc_positional_" + std::to_string(param_idx + 1);
 }
 
 std::vector<ParamBindingInfo> Statement::getParamsBindingInfo(std::size_t param_set_idx) {
