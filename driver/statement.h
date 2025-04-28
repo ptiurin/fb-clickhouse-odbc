@@ -67,6 +67,14 @@ public:
 
     /// Make an implicit descriptor active again.
     void setImplicitDescriptor(SQLINTEGER type);
+    
+    // Helper method to check if a C type is numeric
+    static bool isNumericType(SQLSMALLINT c_type);
+    
+    // Helper method to validate if a string is a valid number
+    static bool isValidNumber(const std::string& value);
+
+    static bool isValidBoolean(const std::string & value);
 
 private:
     void requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mutator);
@@ -86,10 +94,6 @@ private:
     // Returns true if there is a special command that needs handling
     bool handleSpecialCommands();
 
-    // Helper method to escape special characters in JSON strings
-    std::string escapeJSONString(const std::string& input);
-
-private:
     std::shared_ptr<Descriptor> implicit_ard;
     std::shared_ptr<Descriptor> implicit_apd;
     std::shared_ptr<Descriptor> implicit_ird;

@@ -14,6 +14,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include "statement.h"
 // #include <sys/syslog.h>
 
 Statement::Statement(Connection & connection)
@@ -160,6 +161,8 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
     
     for (std::size_t i = 0; i < parameters.size(); ++i) {
         std::string value;
+        bool is_numeric = false;
+        bool is_boolean = false;
 
         if (param_bindings.size() <= i) {
             value = "\\N";
@@ -172,8 +175,11 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
 
             if (binding_info.value == nullptr)
                 value = "\\N";
-            else
+            else {
                 readReadyDataTo(binding_info, value);
+                is_numeric = isNumericType(binding_info.c_type);
+                is_boolean = binding_info.c_type == SQL_C_BIT;
+            }
         }
 
         // Add parameter to JSON array
@@ -186,8 +192,13 @@ void Statement::requestNextPackOfResultSets(std::unique_ptr<ResultMutator> && mu
         // For NULL values
         if (value == "\\N")
             query_parameters += "null";
-        else
-            query_parameters += "\"" + escapeJSONString(value) + "\"";
+        else if (is_boolean && isValidBoolean(value)) {
+            // Convert boolean values to true boolean literals
+            bool parsed_value = false;
+            Poco::NumberParser::tryParseBool(value, parsed_value);
+            query_parameters += parsed_value ? "true" : "false";
+        } else
+            query_parameters += "\"" + value + "\"";
         
         query_parameters += "}";
     }
@@ -377,32 +388,53 @@ void Statement::extractParametersinfo() {
         ipd_desc.getRecord(parameters.size(), SQL_ATTR_IMP_PARAM_DESC);
 }
 
-// Helper method to escape special characters in JSON strings
-std::string Statement::escapeJSONString(const std::string& input) {
-    std::string result;
-    result.reserve(input.size());
-    
-    for (char c : input) {
-        switch (c) {
-            case '\"': result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\b': result += "\\b"; break;
-            case '\f': result += "\\f"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                    result += buf;
-                } else {
-                    result += c;
-                }
-        }
+// Helper method to check if a C type is numeric
+bool Statement::isNumericType(SQLSMALLINT c_type) {
+    switch (c_type) {
+        case SQL_C_SSHORT:
+        case SQL_C_SHORT:
+        case SQL_C_USHORT:
+        case SQL_C_SLONG:
+        case SQL_C_LONG:
+        case SQL_C_ULONG:
+        case SQL_C_FLOAT:
+        case SQL_C_DOUBLE:
+        case SQL_C_SBIGINT:
+        case SQL_C_UBIGINT:
+        case SQL_C_NUMERIC:
+            return true;
+        default:
+            return false;
     }
-    
-    return result;
+}
+
+// Helper to validate if a boolan value is valid
+bool Statement::isValidBoolean(const std::string& value) {
+    if (value.empty())
+        return false;
+    try {
+        bool flag = false;
+        return Poco::NumberParser::tryParseBool(value, flag);
+    } catch (const std::exception&) {
+        return false; // Conversion failed, not a valid number
+    }
+}
+
+// Helper method to validate if a string is a valid number
+bool Statement::isValidNumber(const std::string& value) {
+    if (value.empty())
+        return false;
+    try {
+        size_t idx = 0;
+        long long num = std::stoll(value, &idx);
+        if (idx != value.size()) {
+            return false; // Contains non-numeric characters
+        }
+        // Check if the number fits within Firebolt's long format range
+        return num >= std::numeric_limits<long long>::min() && num <= std::numeric_limits<long long>::max();
+    } catch (const std::exception&) {
+        return false; // Conversion failed, not a valid number
+    }
 }
 
 void Statement::executeQuery(const std::string & q, std::unique_ptr<ResultMutator> && mutator) {
